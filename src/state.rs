@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
 
 use crate::tx::{Transaction, TxError};
 
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Clone, Debug, Serialize, Deserialize)]
 pub struct State {
     pub balances: HashMap<String, u128>,
     pub nonces: HashMap<String, u64>,

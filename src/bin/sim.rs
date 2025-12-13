@@ -1,7 +1,9 @@
 use toychain::chain::Chain;
 use toychain::crypto::pubkey_to_address;
 use toychain::state::State;
-use toychain::tx::{Transaction, TxError};
+use toychain::storage::Storage;
+use toychain::tx::Transaction;
+use toychain::mempool::Mempool;
 
 use ed25519_dalek::Keypair;
 use rand::rngs::OsRng;
@@ -61,88 +63,34 @@ impl Miner {
     }
 }
 
-struct Mempool {
-    pool: Vec<Transaction>,
-}
-
-impl Mempool {
-    fn new() -> Self {
-        Self { pool: Vec::new() }
-    }
-
-    fn len(&self) -> usize {
-        self.pool.len()
-    }
-
-    fn add_tx(&mut self, tx: Transaction, state: &State) -> Result<(), TxError> {
-        tx.verify()?;
-        if tx.nonce != state.nonce_of(&tx.from) {
-            return Err(TxError::BadNonce);
-        }
-        if state.balance_of(&tx.from) < tx.amount as u128 {
-            return Err(TxError::InsufficientFunds);
-        }
-        self.pool.push(tx);
-        Ok(())
-    }
-
-    fn select_for_block(
-        &mut self,
-        chain: &Chain,
-        max: usize,
-    ) -> (Vec<Transaction>, usize, usize) {
-        let mut included = Vec::new();
-        let mut keep = Vec::new();
-        let mut tmp = chain.state.clone();
-        let mut skipped_nonce = 0usize;
-        let mut skipped_funds = 0usize;
-
-        for tx in self.pool.drain(..) {
-            if included.len() >= max {
-                keep.push(tx);
-                continue;
-            }
-            match tmp.apply_tx(&tx) {
-                Ok(_) => {
-                    included.push(tx);
-                }
-                Err(TxError::BadNonce) => {
-                    skipped_nonce += 1;
-                    keep.push(tx);
-                }
-                Err(TxError::InsufficientFunds) => {
-                    skipped_funds += 1;
-                    keep.push(tx);
-                }
-                Err(_) => {}
-            }
-        }
-        self.pool = keep;
-        (included, skipped_nonce, skipped_funds)
-    }
-
-    fn remove_included(&mut self, included_hashes: &[toychain::crypto::Hash32]) {
-        self.pool.retain(|tx| {
-            let h = tx.hash();
-            !included_hashes.iter().any(|x| x == &h)
-        });
-    }
-}
-
 fn main() {
-    let mut chain = Chain::new(12, 50);
-    chain.genesis();
+    let storage = Storage::new("blockchain_data");
+    
+    let mut chain = if storage.chain_exists() {
+        match storage.load_chain() {
+            Ok(c) => {
+                println!("Loaded chain: {} blocks", c.blocks.len());
+                c
+            }
+            Err(e) => {
+                println!("Load failed: {}", e);
+                let mut c = Chain::new(12, 50);
+                c.genesis();
+                c
+            }
+        }
+    } else {
+        let mut c = Chain::new(12, 50);
+        c.genesis();
+        c
+    };
+    
     let mut mempool = Mempool::new();
 
     let miners = vec![Miner::new("Miner1"), Miner::new("Miner2")];
-
     let alice = Wallet::new("Alice");
     let bob = Wallet::new("Bob");
     let carol = Wallet::new("Carol");
-
-    println!("=== Initial Setup ===");
-    println!("Block reward: {}", chain.block_reward);
-    println!("All start with 0 balance\n");
 
     let all_wallets: Vec<&Wallet> = vec![
         &miners[0].wallet,
@@ -157,7 +105,7 @@ fn main() {
     let max_txs_per_block = 5;
 
     for round in 1..=rounds {
-        println!("\n=== Round {} ===", round);
+        println!("\nRound {}", round);
 
         for _ in 0..4 {
             if rng.gen_bool(0.8) {
@@ -181,24 +129,14 @@ fn main() {
 
                 if rng.gen_bool(0.1) && !tx.signature.is_empty() {
                     tx.signature[0] ^= 0x01;
-                    println!(
-                        "TX (BROKEN SIG) {} -> {} amount={}",
-                        sender.name, recv.name, amount
-                    );
                 } else if rng.gen_bool(0.15) {
                     let bad_nonce = tx.nonce + 1;
                     tx = sender.make_tx_with_nonce(recv.address(), amount, bad_nonce);
-                    println!(
-                        "TX (BAD NONCE) {} -> {} amount={}",
-                        sender.name, recv.name, amount
-                    );
-                } else {
-                    println!("TX {} -> {} amount={}", sender.name, recv.name, amount);
                 }
 
                 match mempool.add_tx(tx, &chain.state) {
-                    Ok(_) => println!("  -> accepted (mempool size={})", mempool.len()),
-                    Err(e) => println!("  -> rejected: {}", e),
+                    Ok(_) => {},
+                    Err(_) => {},
                 }
             }
         }
@@ -206,43 +144,30 @@ fn main() {
         let miner_idx = rng.gen_range(0, miners.len());
         let miner = &miners[miner_idx];
 
-        let (to_include, skipped_nonce, skipped_funds) =
-            mempool.select_for_block(&chain, max_txs_per_block);
+        let txs = mempool.select_txs(&chain.state, max_txs_per_block);
 
-        let block = chain.mine_block(to_include, miner.address());
-        println!("\nMining block (miner: {})...", miner.name);
-        chain.add_block(block).expect("valid block");
+        let block = chain.mine_block(txs, miner.address());
+        chain.add_block(block.clone()).expect("valid block");
+        
+        if let Err(_) = storage.save_chain(&chain) {
+        }
 
-        mempool.remove_included(&[]);
+        let included_hashes: Vec<_> = block.txs.iter()
+            .filter(|tx| !tx.is_coinbase())
+            .map(|tx| tx.hash())
+            .collect();
+        
+        mempool.remove_txs(&included_hashes);
 
-        println!("Block added! Height={}", chain.height());
-        println!("  Miner1: {}", chain.state.balance_of(miners[0].address()));
-        println!("  Miner2: {}", chain.state.balance_of(miners[1].address()));
-        println!("  Alice: {}", chain.state.balance_of(alice.address()));
-        println!("  Bob: {}", chain.state.balance_of(bob.address()));
-        println!("  Carol: {}", chain.state.balance_of(carol.address()));
-        println!(
-            "Mempool: {}, skipped: nonce={}, funds={}",
-            mempool.len(),
-            skipped_nonce,
-            skipped_funds
-        );
+        println!("Height: {}, Miner: {}, Mempool: {}", 
+            chain.height(), miner.name, mempool.len());
     }
 
-    println!("\n=== Final State ===");
+    println!("\nFinal state:");
     println!("Height: {}", chain.height());
-    println!("Total money supply: {}", chain.height() * chain.block_reward);
-    println!("\nBalances:");
-    println!("  Miner1: {}", chain.state.balance_of(miners[0].address()));
-    println!("  Miner2: {}", chain.state.balance_of(miners[1].address()));
-    println!("  Alice: {}", chain.state.balance_of(alice.address()));
-    println!("  Bob: {}", chain.state.balance_of(bob.address()));
-    println!("  Carol: {}", chain.state.balance_of(carol.address()));
-
-    let total_balance = chain.state.balance_of(miners[0].address())
-        + chain.state.balance_of(miners[1].address())
-        + chain.state.balance_of(alice.address())
-        + chain.state.balance_of(bob.address())
-        + chain.state.balance_of(carol.address());
-    println!("\nTotal balances: {} (should equal {})", total_balance, chain.height() * chain.block_reward);
+    println!("Miner1: {}", chain.state.balance_of(miners[0].address()));
+    println!("Miner2: {}", chain.state.balance_of(miners[1].address()));
+    println!("Alice: {}", chain.state.balance_of(alice.address()));
+    println!("Bob: {}", chain.state.balance_of(bob.address()));
+    println!("Carol: {}", chain.state.balance_of(carol.address()));
 }
