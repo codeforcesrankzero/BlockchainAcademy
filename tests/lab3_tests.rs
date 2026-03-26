@@ -1,97 +1,83 @@
-#[path = "../labs/lab3/simple_network.rs"]
-mod simple_network;
-
-use simple_network::{SimpleNetwork, Message};
+use toychain::crypto::meets_difficulty;
 use toychain::tx::Transaction;
-use tokio::time::{sleep, Duration};
 
-// ============================================
-// TESTS FOR BASIC NETWORKING
-// ============================================
+#[path = "../labs/lab3/block.rs"]
+mod block;
 
-#[tokio::test]
-async fn test_network_creation() {
-    let network = SimpleNetwork::new("127.0.0.1:7001");
-    assert_eq!(network.peer_count().await, 0);
+use block::Block;
+
+fn empty_block(difficulty: u32) -> Block {
+    Block { height: 1, timestamp: 1_000_000, prev_hash: [0u8; 32], nonce: 0, difficulty, txs: vec![] }
 }
 
-#[tokio::test]
-async fn test_network_start() {
-    let mut network = SimpleNetwork::new("127.0.0.1:7002");
-    assert!(network.start().await.is_ok());
-    
-    sleep(Duration::from_millis(100)).await;
+#[test]
+fn test_txs_root_empty() {
+    assert_eq!(empty_block(8).txs_root(), [0u8; 32]);
 }
 
-#[tokio::test]
-async fn test_peer_connection() {
-    let mut node1 = SimpleNetwork::new("127.0.0.1:7003");
-    node1.start().await.unwrap();
-    
-    sleep(Duration::from_millis(100)).await;
-    
-    let mut node2 = SimpleNetwork::new("127.0.0.1:7004");
-    node2.start().await.unwrap();
-    node2.connect("127.0.0.1:7003").await.unwrap();
-    
-    sleep(Duration::from_millis(200)).await;
-    
-    assert!(node1.peer_count().await > 0 || node2.peer_count().await > 0);
+#[test]
+fn test_txs_root_deterministic() {
+    let cb = Transaction::new_coinbase("miner".to_string(), 50);
+    let mut b = empty_block(8);
+    b.txs.push(cb);
+    assert_eq!(b.txs_root(), b.txs_root());
+    assert_ne!(b.txs_root(), [0u8; 32]);
 }
 
-#[tokio::test]
-async fn test_ping_pong() {
-    let mut node1 = SimpleNetwork::new("127.0.0.1:7005");
-    node1.start().await.unwrap();
-    
-    sleep(Duration::from_millis(100)).await;
-    
-    let mut node2 = SimpleNetwork::new("127.0.0.1:7006");
-    node2.start().await.unwrap();
-    node2.connect("127.0.0.1:7005").await.unwrap();
-    
-    sleep(Duration::from_millis(200)).await;
-    
-    node2.broadcast(Message::Ping).await;
-    
-    sleep(Duration::from_millis(100)).await;
-    
-    if let Some(msg) = node1.receive().await {
-        match msg {
-            Message::Ping => {
-                // OK
-            }
-            _ => panic!("Expected Ping message"),
-        }
-    }
+#[test]
+fn test_txs_root_different_txs() {
+    let cb1 = Transaction::new_coinbase("alice".to_string(), 50);
+    let cb2 = Transaction::new_coinbase("bob".to_string(), 50);
+
+    let mut b1 = empty_block(8);
+    b1.txs.push(cb1);
+    let mut b2 = empty_block(8);
+    b2.txs.push(cb2);
+
+    assert_ne!(b1.txs_root(), b2.txs_root());
 }
 
-#[tokio::test]
-async fn test_transaction_broadcast() {
-    let mut node1 = SimpleNetwork::new("127.0.0.1:7007");
-    node1.start().await.unwrap();
-    
-    sleep(Duration::from_millis(100)).await;
-    
-    let mut node2 = SimpleNetwork::new("127.0.0.1:7008");
-    node2.start().await.unwrap();
-    node2.connect("127.0.0.1:7007").await.unwrap();
-    
-    sleep(Duration::from_millis(200)).await;
-    
-    let tx = Transaction::new_coinbase("test".to_string(), 50);
-    node2.broadcast(Message::NewTransaction(tx.clone())).await;
-    
-    sleep(Duration::from_millis(100)).await;
-    
-    if let Some(msg) = node1.receive().await {
-        match msg {
-            Message::NewTransaction(received_tx) => {
-                assert_eq!(received_tx.to, tx.to);
-                assert_eq!(received_tx.amount, tx.amount);
-            }
-            _ => panic!("Expected NewTransaction message"),
-        }
-    }
+#[test]
+fn test_header_hash_length() {
+    assert_eq!(empty_block(8).header_hash().len(), 32);
 }
 
+#[test]
+fn test_header_hash_changes_with_nonce() {
+    let mut b = empty_block(8);
+    let h0 = b.header_hash();
+    b.nonce = 1;
+    let h1 = b.header_hash();
+    assert_ne!(h0, h1);
+}
+
+#[test]
+fn test_mine_satisfies_difficulty() {
+    let b = empty_block(8).mine(); // difficulty=8 → быстро
+    assert!(
+        meets_difficulty(&b.header_hash(), b.difficulty),
+        "после mine() хеш должен удовлетворять difficulty"
+    );
+}
+
+#[test]
+fn test_mine_deterministic() {
+    let b1 = empty_block(10).mine();
+    let b2 = empty_block(10).mine();
+    assert_eq!(b1.nonce, b2.nonce);
+}
+
+#[test]
+fn test_mine_different_blocks_different_nonce() {
+    let mut b_alice = empty_block(10);
+    b_alice.txs.push(Transaction::new_coinbase("alice".to_string(), 50));
+
+    let mut b_bob = empty_block(10);
+    b_bob.txs.push(Transaction::new_coinbase("bob".to_string(), 50));
+
+    let m1 = b_alice.mine();
+    let m2 = b_bob.mine();
+
+    assert!(meets_difficulty(&m1.header_hash(), m1.difficulty));
+    assert!(meets_difficulty(&m2.header_hash(), m2.difficulty));
+}

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::block::Block;
 use crate::crypto::{meets_difficulty, now_ts, Hash32};
 use crate::state::State;
+use crate::viz::{self, VizEvent, TxInfo};
 
 #[derive(Debug, Error)]
 pub enum BlockError {
@@ -46,8 +47,14 @@ impl Chain {
             nonce: 0,
             difficulty: self.difficulty,
             txs: vec![],
-        };
-        self.blocks.push(genesis.mine());
+        }.mine();
+
+        let hash = genesis.header_hash();
+        self.blocks.push(genesis);
+
+        viz::emit(VizEvent::Genesis {
+            hash_prefix: hex::encode(&hash[..4]),
+        });
     }
 
     pub fn tip_hash(&self) -> Hash32 {
@@ -59,41 +66,99 @@ impl Chain {
     }
 
     pub fn add_block(&mut self, block: Block) -> Result<(), BlockError> {
+        macro_rules! reject {
+            ($err:expr) => {{
+                let e = $err;
+                viz::emit(VizEvent::BlockRejected {
+                    height: block.height,
+                    reason: e.to_string(),
+                });
+                return Err(e);
+            }};
+        }
+
         let expected_height = self.blocks.last().unwrap().height + 1;
-        if block.height != expected_height {
-            return Err(BlockError::BadHeight);
-        }
-        if block.prev_hash != self.tip_hash() {
-            return Err(BlockError::PrevHashMismatch);
-        }
+        if block.height != expected_height        { reject!(BlockError::BadHeight); }
+        if block.prev_hash != self.tip_hash()     { reject!(BlockError::PrevHashMismatch); }
         if block.timestamp < self.blocks.last().unwrap().timestamp {
-            return Err(BlockError::BadTimestamp);
+            reject!(BlockError::BadTimestamp);
         }
         if !meets_difficulty(&block.header_hash(), block.difficulty) {
-            return Err(BlockError::BadPoW);
+            reject!(BlockError::BadPoW);
         }
 
         if block.height > 0 {
             if block.txs.is_empty() || !block.txs[0].is_coinbase() {
-                return Err(BlockError::NoCoinbase);
+                reject!(BlockError::NoCoinbase);
             }
             if block.txs[0].amount != self.block_reward {
-                return Err(BlockError::InvalidReward);
+                reject!(BlockError::InvalidReward);
             }
             for tx in &block.txs[1..] {
-                if tx.is_coinbase() {
-                    return Err(BlockError::MultipleCoinbase);
+                if tx.is_coinbase() { reject!(BlockError::MultipleCoinbase); }
+            }
+        }
+
+        let old_state = viz::active().then(|| self.state.clone());
+
+        let mut next_state = self.state.clone();
+        if let Err(e) = next_state.apply_block(&block) {
+            reject!(BlockError::TxInvalid(e.to_string()));
+        }
+
+        let blk_height = block.height;
+        let blk_hash   = hex::encode(&block.header_hash()[..4]);
+        let blk_miner  = block.txs.first()
+            .filter(|t| t.is_coinbase())
+            .map(|t| t.to.clone())
+            .unwrap_or_default();
+
+        let viz_txs: Vec<TxInfo> = if old_state.is_some() {
+            block.txs.iter()
+                .map(|t| TxInfo {
+                    from:        t.from.clone(),
+                    to:          t.to.clone(),
+                    amount:      t.amount,
+                    is_coinbase: t.is_coinbase(),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        self.state = next_state;
+        self.blocks.push(block);
+
+        viz::emit(VizEvent::BlockAdded {
+            height:      blk_height,
+            hash_prefix: blk_hash,
+            miner:       blk_miner,
+            txs:         viz_txs.clone(),
+        });
+
+        if let Some(old) = old_state {
+            let new_st = &self.state;
+
+            let mut seen = std::collections::HashSet::new();
+            let mut touched: Vec<String> = Vec::new();
+            for tx in &viz_txs {
+                if tx.is_coinbase {
+                    if seen.insert(tx.to.clone()) { touched.push(tx.to.clone()); }
+                } else {
+                    if seen.insert(tx.from.clone()) { touched.push(tx.from.clone()); }
+                    if tx.from != tx.to && seen.insert(tx.to.clone()) { touched.push(tx.to.clone()); }
+                }
+            }
+
+            for addr in touched {
+                let ob = old.balance_of(&addr);
+                let nb = new_st.balance_of(&addr);
+                if ob != nb {
+                    viz::emit(VizEvent::BalanceChange { addr, old_bal: ob, new_bal: nb });
                 }
             }
         }
 
-        let mut next_state = self.state.clone();
-        if let Err(e) = next_state.apply_block(&block) {
-            return Err(BlockError::TxInvalid(e.to_string()));
-        }
-
-        self.state = next_state;
-        self.blocks.push(block);
         Ok(())
     }
 
@@ -104,15 +169,23 @@ impl Chain {
         )];
         all_txs.extend(txs);
 
-        Block {
+        let block = Block {
             height: self.blocks.last().unwrap().height + 1,
             timestamp: now_ts(),
             prev_hash: self.tip_hash(),
             nonce: 0,
             difficulty: self.difficulty,
             txs: all_txs,
-        }
-        .mine()
+        }.mine();
+
+        viz::emit(VizEvent::BlockMined {
+            height:    block.height,
+            miner:     miner_address.to_string(),
+            tx_count:  block.txs.len(),
+            nonce:     block.nonce,
+        });
+
+        block
     }
 
     pub fn get_blocks_from(&self, from_height: u64) -> Vec<Block> {
@@ -193,10 +266,12 @@ impl Chain {
         }
 
         let new_height = new_blocks.last().unwrap().height;
-        
+
         if new_height <= self.height() {
             return Ok(());
         }
+
+        let old_height = self.height();
 
         let fork_height = if new_blocks[0].height == 0 {
             let mut fork_point = 0u64;
@@ -221,7 +296,15 @@ impl Chain {
         self.blocks = new_blocks;
         self.state = new_state;
 
-        println!("Chain reorganization: fork at {}, new height {}", fork_height, self.height());
+        let actual_new_height = self.height();
+
+        viz::emit(VizEvent::Reorg {
+            fork_height,
+            old_height,
+            new_height: actual_new_height,
+        });
+
+        println!("Chain reorganization: fork at {}, new height {}", fork_height, actual_new_height);
 
         Ok(())
     }

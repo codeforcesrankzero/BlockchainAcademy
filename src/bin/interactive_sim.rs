@@ -242,7 +242,6 @@ fn main() {
 
                 let mut tx = sender.wallet.make_tx(&receiver.wallet.addr, amount, nonce);
 
-                // Иногда создаем невалидную транзакцию
                 if rng.gen_bool(config.simulation.invalid_tx_probability) {
                     tx.signature[0] ^= 0x01;
                     println!("{} created INVALID tx → {} ({})", 
@@ -265,7 +264,6 @@ fn main() {
             }
         }
 
-        // Mining phase
         let total_hash_power: usize = users.iter().map(|m| m.hash_power).sum();
         let random_power = rng.gen_range(0, total_hash_power);
         

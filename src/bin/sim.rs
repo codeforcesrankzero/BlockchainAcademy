@@ -4,6 +4,13 @@ use toychain::state::State;
 use toychain::storage::Storage;
 use toychain::tx::Transaction;
 use toychain::mempool::Mempool;
+use toychain::viz;
+
+use std::thread::sleep;
+use std::time::Duration;
+
+const ROUND_DELAY_MS: u64 = 1_500;
+const TX_DELAY_MS: u64 = 250;
 
 use ed25519_dalek::Keypair;
 use rand::rngs::OsRng;
@@ -64,6 +71,8 @@ impl Miner {
 }
 
 fn main() {
+    viz::start();
+
     let storage = Storage::new("blockchain_data");
     
     let mut chain = if storage.chain_exists() {
@@ -89,8 +98,14 @@ fn main() {
 
     let miners = vec![Miner::new("Miner1"), Miner::new("Miner2")];
     let alice = Wallet::new("Alice");
-    let bob = Wallet::new("Bob");
+    let bob   = Wallet::new("Bob");
     let carol = Wallet::new("Carol");
+
+    viz::register(miners[0].address(), "Miner1");
+    viz::register(miners[1].address(), "Miner2");
+    viz::register(alice.address(),     "Alice");
+    viz::register(bob.address(),       "Bob");
+    viz::register(carol.address(),     "Carol");
 
     let all_wallets: Vec<&Wallet> = vec![
         &miners[0].wallet,
@@ -106,6 +121,8 @@ fn main() {
 
     for round in 1..=rounds {
         println!("\nRound {}", round);
+
+        sleep(Duration::from_millis(ROUND_DELAY_MS));
 
         for _ in 0..4 {
             if rng.gen_bool(0.8) {
@@ -138,6 +155,8 @@ fn main() {
                     Ok(_) => {},
                     Err(_) => {},
                 }
+
+                sleep(Duration::from_millis(TX_DELAY_MS));
             }
         }
 
@@ -162,6 +181,8 @@ fn main() {
         println!("Height: {}, Miner: {}, Mempool: {}", 
             chain.height(), miner.name, mempool.len());
     }
+
+    viz::flush();
 
     println!("\nFinal state:");
     println!("Height: {}", chain.height());

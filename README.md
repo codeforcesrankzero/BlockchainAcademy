@@ -1,19 +1,21 @@
-#### Blockchain academy
+# ToyChain — учебный блокчейн на Rust
 
-Educational blockchain implementation in Rust demonstrating core concepts of cryptocurrency systems.
+Это мой проект по курсу блокчейн-технологий. Я реализовал упрощённый блокчейн, вдохновлённый Bitcoin, чтобы на практике разобраться, как устроены криптовалюты изнутри: от хеширования и цифровых подписей до майнинга, консенсуса и P2P-сети.
 
-## Features
+Проект написан на Rust и состоит из пяти лабораторных работ, каждая из которых добавляет новый слой функциональности. В итоге получается полноценный (хоть и учебный) блокчейн с визуализацией в браузере.
 
-- Ed25519 digital signatures
-- SHA-256 hashing
-- Proof-of-Work mining
-- Account-based state model
-- Transaction mempool
-- Block validation and consensus
-- P2P network simulation
-- Chain reorganization
+## Что умеет
 
-## Installation
+- **Криптография** — SHA-256 хеширование, Ed25519 цифровые подписи, генерация адресов кошельков
+- **Транзакции** — создание, подпись и верификация переводов между участниками; защита от replay-атак через nonce
+- **Майнинг** — Proof-of-Work с настраиваемой сложностью, coinbase-транзакции (награда майнеру)
+- **Цепочка блоков** — валидация блоков, проверка целостности цепи, разрешение форков по правилу самой длинной цепи
+- **Состояние** — модель с балансами аккаунтов и nonce, применение транзакций к состоянию
+- **Мемпул** — пул неподтверждённых транзакций, отбор транзакций для включения в блок
+- **P2P-сеть** — обмен блоками и транзакциями между нодами, обнаружение пиров
+- **Визуализация** — веб-дашборд на `localhost:3000` с отображением цепочки блоков, балансов и событий в реальном времени
+
+## Быстрый старт
 
 ```bash
 git clone <repository>
@@ -21,44 +23,78 @@ cd toychain
 cargo build --release
 ```
 
-## Usage
-
-Run simulation:
+Запустить симуляцию:
 ```bash
 cargo run --bin sim
 ```
 
-Run tests:
+Запустить тесты:
 ```bash
 cargo test
 ```
 
-Available binaries:
-- `sim` - blockchain simulator with random transactions
-- `network_demo` - P2P network demonstration
-- `network_test` - integration tests
-- `mempool_sync_demo` - mempool synchronization
-- `attack_51` - 51% attack demonstration
+## Лабораторные работы
 
-## Project Structure
+Проект построен вокруг пяти лабораторных, каждая из которых надстраивается над предыдущей:
+
+| Лаба | Тема | Что реализуем | Запуск демо |
+|------|------|---------------|-------------|
+| 1 | Хеширование | `sha256()`, `meets_difficulty()`, `pubkey_to_address()` | `cargo run --bin lab1_demo` |
+| 2 | Транзакции | Создание, подпись и верификация транзакций (Ed25519) | `cargo run --bin lab2_demo` |
+| 3 | Блоки и майнинг | Корень транзакций, хеш заголовка, PoW-майнинг | `cargo run --bin lab3_demo` |
+| 4 | Состояние и цепочка | Применение транзакций, валидация блоков, genesis-блок | `cargo run --bin lab4_demo` |
+| 5 | Мемпул | Фильтрация транзакций, отбор для майнинга, очистка после добавления блока | — |
+
+У каждой лабы есть:
+- Описание задания в `labs/LAB*_*.md`
+- Скелет кода в `labs/labN/`
+- Тесты в `tests/labN_tests.rs`
+
+## Демонстрации
+
+Помимо лабораторных, есть готовые сценарии, которые показывают работу блокчейна в различных ситуациях:
+
+```bash
+# Интерактивная симуляция с несколькими участниками
+cargo run --bin interactive_sim
+
+# P2P-сеть: синхронизация блоков между нодами
+cargo run --bin network_demo
+
+# Обнаружение пиров и разрешение форков
+cargo run --bin discovery_demo
+
+# Синхронизация мемпулов между нодами
+cargo run --bin mempool_sync_demo
+
+# Атака 51% — попытка double-spend (лучше с --release, майнинг быстрее)
+cargo run --release --bin attack_51
+```
+
+Параметры симуляции настраиваются в `simulation_config.toml` — можно менять количество участников, вероятность транзакций, распределение мощности майнинга и сценарии атак.
+
+## Структура проекта
 
 ```
 toychain/
 ├── src/
-│   ├── crypto.rs      # Cryptographic primitives
-│   ├── tx.rs          # Transactions
-│   ├── block.rs       # Blocks and mining
-│   ├── state.rs       # State management
-│   ├── chain.rs       # Blockchain
-│   ├── mempool.rs     # Transaction pool
-│   ├── network.rs     # P2P networking
-│   ├── node.rs        # Full node implementation
-│   └── storage.rs     # Persistence
-├── tests/             # Integration tests
-└── labs/              # Laboratory assignments
+│   ├── crypto.rs      # SHA-256, Ed25519, проверка сложности
+│   ├── tx.rs          # Транзакции: создание, подпись, верификация
+│   ├── block.rs       # Блоки: корень транзакций, хеш, майнинг
+│   ├── state.rs       # Состояние: балансы, nonce, применение транзакций
+│   ├── chain.rs       # Цепочка: валидация, консенсус, реорганизация
+│   ├── mempool.rs     # Мемпул: хранение и отбор транзакций
+│   ├── network.rs     # P2P-сеть: обмен сообщениями между нодами
+│   ├── node.rs        # Полная нода: объединяет все компоненты
+│   ├── storage.rs     # Сохранение данных на диск
+│   ├── viz.rs         # Веб-визуализация (дашборд на localhost:3000)
+│   └── bin/           # Исполняемые файлы демонстраций
+├── tests/             # Тесты к лабораторным
+├── labs/              # Задания и скелеты кода
+└── simulation_config.toml
 ```
 
-## API Example
+## Пример использования API
 
 ```rust
 use toychain::node::Node;
@@ -73,114 +109,33 @@ node.broadcast_transaction(tx).await?;
 node.mine_block(10).await?;
 ```
 
-## Architecture
+## Чем отличается от настоящего Bitcoin
 
-Core components:
-- **Transaction**: signed transfers with nonce-based replay protection
-- **Block**: container for transactions with Proof-of-Work
-- **Chain**: validates and links blocks, maintains state
-- **State**: tracks balances and nonces
-- **Mempool**: unconfirmed transaction pool
-- **Network**: P2P message passing
-- **Node**: full node integrating all components
+| | ToyChain | Bitcoin |
+|---|----------|---------|
+| Сложность PoW | 12 бит | 70+ бит |
+| Сеть | Симуляция на локалке | Глобальная P2P-сеть |
+| Хранение | Опционально | Обязательно |
+| Разрешение форков | Базовое (longest chain) | Полноценный консенсус |
+| Подпись | Ed25519 | ECDSA (secp256k1) |
+| Модель аккаунтов | Балансы + nonce | UTXO |
+| Объём кода | ~2000 строк | 150 000+ строк |
 
-## Configuration
+Это учебный проект — многое упрощено ради наглядности, но ключевые принципы работают так же, как в реальных блокчейнах.
 
-Default parameters:
-- Difficulty: 12 bits
-- Block reward: 50
-- Hash: SHA-256
-- Signature: Ed25519
-
-## Testing
-
-```bash
-cargo test --lib
-cargo test lab1
-cargo test lab2
-cargo test lab3
-```
-
-## Quick Start Recipes
-
-### 1. Local Blockchain Simulation
-Run a standalone blockchain without networking:
-```bash
-cargo run --bin sim
-```
-Creates local blockchain data, demonstrates mining and state management.
-
-### 2. Interactive Simulation
-Configurable multi-user simulation with visualization:
-```bash
-cargo run --bin interactive_sim
-```
-Edit `simulation_config.toml` to customize:
-- Number of rounds and participants
-- Transaction creation probability
-- Mining power distribution per user
-- Invalid transaction probability
-
-Example configuration for 51% attack scenario:
-```toml
-[simulation]
-duration_rounds = 50
-mining_rounds_per_node = [1, 1, 1, 5]  # Last user has 62.5% hash power
-
-[scenarios]
-active = "normal"
-```
-
-### 3. P2P Network Demo
-Run multiple nodes with peer-to-peer networking:
-
-Terminal 1:
-```bash
-cargo run --bin network_demo
-```
-
-### 4. Fork Resolution Demo
-See longest-chain consensus in action:
-```bash
-cargo run --bin discovery_demo
-```
-Demonstrates:
-- Peer discovery through seed nodes
-- Fork creation with competing blocks
-- Automatic chain reorganization
-- Network-wide consensus
-
-### 5. 51% Attack Simulation
-Observe attack scenario with malicious majority:
-```bash
-cargo run --release --bin attack_51
-```
-Use `--release` for faster mining. Shows double-spend attempt and chain reorganization.
-
-## Documentation
-
-- `ARCHITECTURE.md` - system design and implementation details
-- `TUTORIAL.md` - step-by-step guide
-- `labs/` - hands-on assignments
-
-## Differences from Production Blockchains
-
-| Aspect | ToyChain | Bitcoin |
-|--------|----------|---------|
-| PoW difficulty | 12 bits | 70+ bits |
-| Network | Simulated | Global P2P |
-| Persistence | Optional | Required |
-| Fork resolution | Basic | Complete |
-| Code size | ~2000 lines | 150,000+ lines |
-
-Educational simplifications for clarity and learning.
-
-## Requirements
+## Требования
 
 - Rust 1.70+
 
+## Тестирование
 
-## References
+```bash
+cargo test              # все тесты
+cargo test --test lab1_tests  # тесты к конкретной лабе
+cargo test --lib        # юнит-тесты библиотеки
+```
+
+## Полезные материалы
 
 - Bitcoin whitepaper (Satoshi Nakamoto, 2008)
 - Mastering Bitcoin (Andreas Antonopoulos)

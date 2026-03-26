@@ -7,3 +7,4 @@ pub mod storage;
 pub mod network;
 pub mod mempool;
 pub mod node;
+pub mod viz;

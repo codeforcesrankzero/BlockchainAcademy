@@ -1,20 +1,22 @@
 use toychain::chain::Chain;
 use toychain::crypto::pubkey_to_address;
 use toychain::tx::Transaction;
+use toychain::viz::{self, VizEvent};
 use ed25519_dalek::Keypair;
 use rand::rngs::OsRng;
+use std::thread::sleep;
+use std::time::Duration;
 
-struct Attacker {
-    name: &'static str,
-    keypair: Keypair,
-    address: String,
+struct Wallet {
+    keypair:     Keypair,
+    pub address: String,
 }
 
-impl Attacker {
-    fn new(name: &'static str) -> Self {
+impl Wallet {
+    fn new() -> Self {
         let keypair = Keypair::generate(&mut OsRng);
         let address = pubkey_to_address(&keypair.public);
-        Self { name, keypair, address }
+        Self { keypair, address }
     }
 
     fn make_tx(&self, to: &str, amount: u64, nonce: u64) -> Transaction {
@@ -31,78 +33,75 @@ impl Attacker {
 }
 
 fn main() {
-    println!("51% Attack Simulation\n");
+    viz::start();
 
-    let attacker = Attacker::new("Attacker");
-    let merchant = Attacker::new("Merchant");
-    let honest_miner = "honest_miner";
-    
-    println!("Attacker: {}", &attacker.address[..16]);
-    println!("Merchant: {}", &merchant.address[..16]);
+    let attacker = Wallet::new();
+    let merchant = Wallet::new();
+    let honest_miner = "honest_miner_addr";
 
-    println!("\nPhase 1: Honest Network");
-    
+    viz::register(&attacker.address, "Attacker");
+    viz::register(&merchant.address, "Merchant");
+    viz::register(honest_miner, "HonestMiner");
+
     let mut honest_chain = Chain::new(8, 50);
     honest_chain.genesis();
+    sleep(Duration::from_millis(600));
 
-    for _ in 1..=20 {
+    for _ in 1..=10 {
         let block = honest_chain.mine_block(vec![], &attacker.address);
         honest_chain.add_block(block).unwrap();
+        sleep(Duration::from_millis(400));
     }
-    
-    println!("Height: {}, Attacker balance: {}", 
-        honest_chain.height(),
-        honest_chain.state.balance_of(&attacker.address));
 
-    println!("\nPhase 2: Purchase");
-    
-    let payment_tx = attacker.make_tx(&merchant.address, 900, 0);
-    let payment_block = honest_chain.mine_block(vec![payment_tx.clone()], honest_miner);
+    let payment_tx = attacker.make_tx(&merchant.address, 400, 0);
+    let payment_block = honest_chain.mine_block(vec![payment_tx], honest_miner);
+    let fork_height = payment_block.height;
     honest_chain.add_block(payment_block).unwrap();
-    
-    println!("Payment block mined at height {}", honest_chain.height());
-    println!("Attacker: {}, Merchant: {}", 
-        honest_chain.state.balance_of(&attacker.address),
-        honest_chain.state.balance_of(&merchant.address));
-
-    println!("\nPhase 3: Attack (mining alternate chain)");
-    
-    let mut attacker_chain = Chain::new(8, 50);
-    attacker_chain.blocks = honest_chain.blocks[..honest_chain.blocks.len()-1].to_vec();
-    
-    for block in &attacker_chain.blocks {
-        attacker_chain.state.apply_block(block).unwrap();
-    }
-    
-    let fraud_tx = attacker.make_tx(&attacker.address, 900, 0);
-    let fraud_block = attacker_chain.mine_block(vec![fraud_tx], &attacker.address);
-    attacker_chain.add_block(fraud_block).unwrap();
-
-    let block = honest_chain.mine_block(vec![], honest_miner);
-    honest_chain.add_block(block).unwrap();
+    sleep(Duration::from_millis(600));
 
     for _ in 0..2 {
-        let block = attacker_chain.mine_block(vec![], &attacker.address);
-        attacker_chain.add_block(block).unwrap();
+        let b = honest_chain.mine_block(vec![], honest_miner);
+        honest_chain.add_block(b).unwrap();
+        sleep(Duration::from_millis(400));
     }
 
-    println!("\nPhase 4: Chain Comparison");
-    
-    println!("Honest chain height: {}", honest_chain.height());
-    println!("Attack chain height: {}", attacker_chain.height());
-    
-    if attacker_chain.height() > honest_chain.height() {
-        println!("\nAttack successful (longer chain wins)");
-        println!("Attacker balance: {} (recovered)", 
-            attacker_chain.state.balance_of(&attacker.address));
-        println!("Merchant balance: {} (payment vanished)", 
-            attacker_chain.state.balance_of(&merchant.address));
-    } else {
-        println!("\nAttack failed (honest chain still longer)");
+    viz::set_chain("attack");
+
+    let mut attack_chain = Chain::new(8, 50);
+    attack_chain.blocks = honest_chain.blocks[..fork_height as usize].to_vec();
+    for block in &attack_chain.blocks {
+        attack_chain.state.apply_block(block).unwrap();
     }
 
-    println!("\nProtection:");
-    println!("- Wait for multiple confirmations (6+ blocks)");
-    println!("- Increase decentralization");
-    println!("- Use Proof-of-Stake");
+    let doublespend_tx = attacker.make_tx(&attacker.address, 400, 0);
+    let fork_block = attack_chain.mine_block(vec![doublespend_tx], &attacker.address);
+    attack_chain.add_block(fork_block).unwrap();
+    sleep(Duration::from_millis(500));
+
+    for _ in 0..4 {
+        let b = attack_chain.mine_block(vec![], &attacker.address);
+        attack_chain.add_block(b).unwrap();
+        sleep(Duration::from_millis(400));
+    }
+
+    viz::set_chain("main");
+
+    let honest_h  = honest_chain.height();
+    let attack_h  = attack_chain.height();
+    let won = attack_h > honest_h;
+
+    viz::emit(VizEvent::ForkOutcome {
+        attacker_won:  won,
+        honest_height: honest_h,
+        attack_height: attack_h,
+    });
+
+    if won {
+        let atk_bal = attack_chain.state.balance_of(&attacker.address);
+        let mer_bal = attack_chain.state.balance_of(&merchant.address);
+        viz::emit(VizEvent::BalanceChange { addr: attacker.address.clone(), old_bal: 0, new_bal: atk_bal });
+        viz::emit(VizEvent::BalanceChange { addr: merchant.address.clone(), old_bal: 400, new_bal: mer_bal });
+    }
+
+    viz::flush();
 }

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use crate::tx::{Transaction, TxError};
 use crate::state::State;
 use crate::crypto::Hash32;
+use crate::viz::{self, VizEvent};
 
 pub struct Mempool {
     txs: HashMap<Hash32, Transaction>,
@@ -19,15 +20,41 @@ impl Mempool {
             return Ok(());
         }
 
-        tx.verify()?;
+        macro_rules! reject {
+            ($err:expr) => {{
+                let e = $err;
+                viz::emit(VizEvent::TxRejected {
+                    from:   tx.from.clone(),
+                    to:     tx.to.clone(),
+                    amount: tx.amount,
+                    reason: e.to_string(),
+                });
+                return Err(e);
+            }};
+        }
+
+        if let Err(e) = tx.verify() {
+            reject!(e);
+        }
 
         if tx.nonce != state.nonce_of(&tx.from) {
-            return Err(TxError::BadNonce);
+            reject!(TxError::BadNonce);
         }
 
         if state.balance_of(&tx.from) < tx.amount as u128 {
-            return Err(TxError::InsufficientFunds);
+            reject!(TxError::InsufficientFunds);
         }
+
+        let warn_dup_nonce = self.txs.values()
+            .any(|existing| existing.from == tx.from && existing.nonce == tx.nonce);
+
+        viz::emit(VizEvent::TxAccepted {
+            from:   tx.from.clone(),
+            to:     tx.to.clone(),
+            amount: tx.amount,
+            nonce:  tx.nonce,
+            warn_dup_nonce,
+        });
 
         let hash = tx.hash();
         self.txs.insert(hash, tx);

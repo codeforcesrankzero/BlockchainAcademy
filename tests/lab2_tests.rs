@@ -1,227 +1,103 @@
-use toychain::crypto::pubkey_to_address;
-use toychain::tx::Transaction;
 use ed25519_dalek::Keypair;
 use rand::rngs::OsRng;
+use toychain::crypto::pubkey_to_address;
 
-#[path = "../labs/lab2/state.rs"]
-mod state;
+#[path = "../labs/lab2/tx.rs"]
+mod tx;
 
-#[path = "../labs/lab2/chain.rs"]
-mod chain;
+use tx::{Transaction, TxError};
 
-use state::State;
-use chain::{Chain, BlockError};
-
-// ============================================
-// TESTS FOR STATE
-// ============================================
-
-#[test]
-fn test_state_balance() {
-    let mut state = State::default();
-    
-    assert_eq!(state.balance_of("alice"), 0);
-    
-    state.balances.insert("alice".to_string(), 100);
-    assert_eq!(state.balance_of("alice"), 100);
-}
-
-#[test]
-fn test_state_nonce() {
-    let mut state = State::default();
-    
-    assert_eq!(state.nonce_of("alice"), 0);
-    
-    state.nonces.insert("alice".to_string(), 5);
-    assert_eq!(state.nonce_of("alice"), 5);
-}
-
-#[test]
-fn test_apply_transaction() {
-    let mut rng = OsRng;
-    let keypair = Keypair::generate(&mut rng);
-    let from_addr = pubkey_to_address(&keypair.public);
-    
-    let mut state = State::default();
-    state.balances.insert(from_addr.clone(), 1000);
-    
+fn make_signed(from_kp: &Keypair, to: &str, amount: u64, nonce: u64) -> Transaction {
+    let from = pubkey_to_address(&from_kp.public);
     let mut tx = Transaction::new_unsigned(
-        from_addr.clone(),
-        "bob".to_string(),
-        100,
-        0,
-        keypair.public.as_bytes().to_vec(),
+        from, to.to_string(), amount, nonce, from_kp.public.as_bytes().to_vec(),
     );
-    tx.sign(&keypair);
-    
-    assert!(state.apply_tx(&tx).is_ok());
-    
-    assert_eq!(state.balance_of(&from_addr), 900);
-    assert_eq!(state.balance_of("bob"), 100);
-    assert_eq!(state.nonce_of(&from_addr), 1);
+    tx.sign(from_kp);
+    tx
 }
 
 #[test]
-fn test_apply_coinbase() {
-    let mut state = State::default();
-    
-    let coinbase = Transaction::new_coinbase("miner".to_string(), 50);
-    
-    assert!(state.apply_tx(&coinbase).is_ok());
-    assert_eq!(state.balance_of("miner"), 50);
-}
-
-#[test]
-fn test_insufficient_funds() {
+fn test_new_unsigned_fields() {
     let mut rng = OsRng;
-    let keypair = Keypair::generate(&mut rng);
-    let from_addr = pubkey_to_address(&keypair.public);
-    
-    let mut state = State::default();
-    state.balances.insert(from_addr.clone(), 50);
-    
-    let mut tx = Transaction::new_unsigned(
-        from_addr,
-        "bob".to_string(),
-        100,
-        0,
-        keypair.public.as_bytes().to_vec(),
+    let kp = Keypair::generate(&mut rng);
+    let addr = pubkey_to_address(&kp.public);
+
+    let tx = Transaction::new_unsigned(
+        addr.clone(), "bob".to_string(), 42, 3, kp.public.as_bytes().to_vec(),
     );
-    tx.sign(&keypair);
-    
-    assert!(state.apply_tx(&tx).is_err());
+    assert_eq!(tx.from, addr);
+    assert_eq!(tx.to, "bob");
+    assert_eq!(tx.amount, 42);
+    assert_eq!(tx.nonce, 3);
+    assert!(tx.signature.is_empty(), "новая транзакция не должна быть подписана");
 }
 
 #[test]
-fn test_bad_nonce() {
+fn test_sign_produces_64_bytes() {
     let mut rng = OsRng;
-    let keypair = Keypair::generate(&mut rng);
-    let from_addr = pubkey_to_address(&keypair.public);
-    
-    let mut state = State::default();
-    state.balances.insert(from_addr.clone(), 1000);
-    state.nonces.insert(from_addr.clone(), 5);
-    
-    let mut tx = Transaction::new_unsigned(
-        from_addr,
-        "bob".to_string(),
-        100,
-        0, // Неправильный nonce (должен быть 5)
-        keypair.public.as_bytes().to_vec(),
-    );
-    tx.sign(&keypair);
-    
-    assert!(state.apply_tx(&tx).is_err());
-}
-
-// ============================================
-// TESTS FOR CHAIN
-// ============================================
-
-#[test]
-fn test_genesis() {
-    let mut chain = Chain::new(8, 50);
-    chain.genesis();
-    
-    assert_eq!(chain.height(), 0);
-    assert_eq!(chain.blocks.len(), 1);
-    assert_eq!(chain.blocks[0].height, 0);
+    let kp = Keypair::generate(&mut rng);
+    let tx = make_signed(&kp, "bob", 10, 0);
+    assert_eq!(tx.signature.len(), 64, "Ed25519 подпись = 64 байта");
 }
 
 #[test]
-fn test_chain_height() {
-    let mut chain = Chain::new(8, 50);
-    
-    assert_eq!(chain.height(), 0);
-    
-    chain.genesis();
-    assert_eq!(chain.height(), 0);
+fn test_verify_valid() {
+    let mut rng = OsRng;
+    let kp = Keypair::generate(&mut rng);
+    let tx = make_signed(&kp, "bob", 100, 0);
+    assert!(tx.verify().is_ok());
 }
 
 #[test]
-fn test_add_valid_block() {
-    let mut chain = Chain::new(8, 50);
-    chain.genesis();
-    
-    let block = chain.mine_block(vec![], "miner");
-    assert!(chain.add_block(block).is_ok());
-    
-    assert_eq!(chain.height(), 1);
-    assert_eq!(chain.state.balance_of("miner"), 50);
+fn test_verify_tampered_amount() {
+    let mut rng = OsRng;
+    let kp = Keypair::generate(&mut rng);
+    let mut tx = make_signed(&kp, "bob", 100, 0);
+    tx.amount = 9999; // подделка суммы
+    assert!(tx.verify().is_err(), "изменённая сумма должна не проходить верификацию");
 }
 
 #[test]
-fn test_reject_wrong_height() {
-    let mut chain = Chain::new(8, 50);
-    chain.genesis();
-    
-    let mut block = chain.mine_block(vec![], "miner");
-    block.height = 5; // Неправильная высота
-    
-    assert!(matches!(chain.add_block(block), Err(BlockError::BadHeight)));
+fn test_verify_tampered_signature() {
+    let mut rng = OsRng;
+    let kp = Keypair::generate(&mut rng);
+    let mut tx = make_signed(&kp, "bob", 100, 0);
+    tx.signature[0] ^= 0x01;
+    assert!(matches!(tx.verify(), Err(TxError::InvalidSignature)));
 }
 
 #[test]
-fn test_reject_wrong_prev_hash() {
-    let mut chain = Chain::new(8, 50);
-    chain.genesis();
-    
-    let mut block = chain.mine_block(vec![], "miner");
-    block.prev_hash = [0xff; 32]; // Неправильный prev_hash
-    
-    // Нужно перемайнить с новым prev_hash
-    let mined = block.mine();
-    
-    assert!(matches!(chain.add_block(mined), Err(BlockError::PrevHashMismatch)));
+fn test_verify_wrong_pubkey() {
+    let mut rng = OsRng;
+    let kp1 = Keypair::generate(&mut rng);
+    let kp2 = Keypair::generate(&mut rng);
+    let mut tx = make_signed(&kp1, "bob", 100, 0);
+    tx.pubkey = kp2.public.as_bytes().to_vec();
+    assert!(tx.verify().is_err());
 }
 
 #[test]
-fn test_reject_bad_pow() {
-    let mut chain = Chain::new(8, 50);
-    chain.genesis();
-    
-    let mut block = chain.mine_block(vec![], "miner");
-    block.nonce = 0; // Сбросим nonce - PoW не будет валиден
-    
-    assert!(matches!(chain.add_block(block), Err(BlockError::BadPoW)));
+fn test_coinbase_always_valid() {
+    let cb = Transaction::new_coinbase("miner".to_string(), 50);
+    assert!(cb.is_coinbase());
+    assert!(cb.verify().is_ok(), "coinbase верифицируется без подписи");
 }
 
 #[test]
-fn test_mine_block() {
-    let chain = Chain::new(8, 50);
-    
-    // Создаем fake genesis для теста
-    let genesis = toychain::block::Block {
-        height: 0,
-        timestamp: 0,
-        prev_hash: [0; 32],
-        nonce: 0,
-        difficulty: 8,
-        txs: vec![],
-    }.mine();
-    
-    let mut test_chain = chain.clone();
-    test_chain.blocks.push(genesis);
-    
-    let block = test_chain.mine_block(vec![], "miner");
-    
-    assert_eq!(block.height, 1);
-    assert_eq!(block.txs.len(), 1); // Только coinbase
-    assert!(block.txs[0].is_coinbase());
-    assert_eq!(block.txs[0].amount, 50);
+fn test_hash_deterministic() {
+    let mut rng = OsRng;
+    let kp = Keypair::generate(&mut rng);
+    let tx = make_signed(&kp, "bob", 50, 0);
+    assert_eq!(tx.hash(), tx.hash());
+    assert_eq!(tx.hash().len(), 32);
 }
 
 #[test]
-fn test_multiple_blocks() {
-    let mut chain = Chain::new(8, 50);
-    chain.genesis();
-    
-    for i in 1..=5 {
-        let block = chain.mine_block(vec![], "miner");
-        chain.add_block(block).unwrap();
-        assert_eq!(chain.height(), i);
-    }
-    
-    assert_eq!(chain.state.balance_of("miner"), 250); // 5 * 50
+fn test_hash_changes_on_tamper() {
+    let mut rng = OsRng;
+    let kp = Keypair::generate(&mut rng);
+    let tx = make_signed(&kp, "bob", 50, 0);
+    let mut tx2 = tx.clone();
+    tx2.amount = 51;
+    assert_ne!(tx.hash(), tx2.hash());
 }
-

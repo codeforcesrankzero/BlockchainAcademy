@@ -188,25 +188,6 @@ async fn main() {
         println!("\nConsensus not fully achieved, heights differ");
     }
 
-    println!("\n═══ Summary ═══\n");
-    println!("Peer Discovery:");
-    println!("   - Nodes discovered each other via seed nodes");
-    println!("   - Network formed organically");
-    println!("   - No manual configuration needed\n");
-
-    println!("Fork Resolution:");
-    println!("   - Fork was created (2 blocks at height 2)");
-    println!("   - Longer chain was mined (height 4)");
-    println!("   - All nodes automatically reorganized");
-    println!("   - Consensus restored via longest chain rule\n");
-
-    println!("Key Concepts Demonstrated:");
-    println!("   1. Decentralized peer discovery");
-    println!("   2. Fork detection");
-    println!("   3. Automatic chain reorganization");
-    println!("   4. Longest chain rule");
-    println!("   5. Network synchronization\n");
-
-    println!("Demo completed successfully");
+    println!("\nDemo completed");
 }
 
